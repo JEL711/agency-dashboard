@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
+const CLAUDE_API_KEY = import.meta.env.VITE_CLAUDE_API_KEY;
+
 const CLIENTS_INIT = [
   {
     id: 1,
@@ -83,39 +85,71 @@ const PLATFORM_ICONS = {
   YouTube: "▶"
 };
 
-const CONTENT_TEMPLATES = {
-  "Motivational Quote": [
-    "The courtroom doesn't care about your excuses. It respects preparation. So does life.",
-    "Silence isn't weakness. It's the sound of someone who knows exactly when to speak.",
-    "Every case I've ever won started with someone who refused to give up on themselves.",
-    "Justice doesn't happen by accident. It happens by design.",
-    "The strongest people I've defended weren't fearless. They were afraid and showed up anyway."
-  ],
-  "Client Testimonial": [
-    "📹 [VIDEO] \"When everyone else said it was over, Phil's team found a way. That's not a lawyer — that's a lifeline.\" — Former Client",
-    "📹 [VIDEO] \"He looked me in the eye and told me the truth, not what I wanted to hear. That's why I trusted him with my life.\" — Former Client",
-    "📹 [VIDEO] \"I walked into that office broken. I walked out of that courtroom free. Phil Steinberg is the real deal.\" — Former Client"
-  ],
-  "Client Quote Post": [
-    "\"I didn't just get a lawyer. I got someone who actually fought for me.\" Words from a client who reminded us why we do this.",
-    "\"Phil doesn't just know the law. He knows people.\" — That's the difference between a good attorney and the right attorney.",
-  ],
-  "Behind the Scenes": [
-    "📸 5:47 AM. Coffee's on. Case files are open. The work happens before anyone's watching.",
-    "📸 Team meeting at the firm. Every case gets the full table. That's how we operate.",
-  ],
-  "Industry Insight": [
-    "A lot of people don't know this: you have the right to remain silent AND the right to have your attorney present during questioning. Use both.",
-    "If someone you love gets arrested, the first call should be to a lawyer — not to post bail. Sequence matters.",
-  ],
-  "Short-form Video": [
-    "🎬 [VIDEO CONCEPT] 15-sec: Phil walking into courthouse, voiceover: \"They see the suit. Opposing counsel sees the preparation.\"",
-    "🎬 [VIDEO CONCEPT] 30-sec: Quick legal myth-bust. \"Think pleading guilty is easier? Let me tell you what 'easier' actually costs.\"",
-  ],
-  "Case Study (anonymized)": [
-    "📋 Client charged with a felony. Prosecution confident. 6 months of preparation later — all charges dismissed. The details matter.",
-  ]
-};
+const CONTENT_TYPES = [
+  "Motivational Quote",
+  "Client Testimonial",
+  "Client Quote Post",
+  "Behind the Scenes",
+  "Industry Insight",
+  "Short-form Video Concept",
+  "Case Study (anonymized)",
+  "Educational Post"
+];
+
+// ─── Claude API Call ───
+async function generateWithClaude(client, contentType, platform) {
+  const systemPrompt = `You are a social media content strategist for ${client.name}, ${client.role} at ${client.firm} in ${client.location}.
+
+NICHE: ${client.niche}
+
+BRAND VOICE: ${client.tone}
+
+CONTENT MIX: ${client.contentMix.join(", ")}
+
+GUARDRAILS — NEVER VIOLATE:
+${client.guardrails.map(g => `- ${g}`).join("\n")}
+
+You create social media posts that are ready to publish. Every post should reinforce that ${client.name} is the person you call when it matters most.
+
+Rules:
+- Write the actual post copy, not a description of what to post
+- Include relevant emoji sparingly — never overdo it
+- If it's a video concept, write the script/voiceover and visual direction
+- Match the platform's native style (Instagram = visual storytelling, X = punchy and sharp, TikTok = hook-first, Facebook = slightly longer form)
+- Never use hashtags unless specifically asked
+- Sound human, not like AI or marketing copy`;
+
+  const userPrompt = `Create a ${contentType} post for ${platform}. Give me just the post — no preamble, no explanation, no options. One post, ready to go.`;
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": CLAUDE_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }]
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`API Error: ${response.status} — ${err}`);
+    }
+
+    const data = await response.json();
+    return data.content[0].text;
+  } catch (error) {
+    console.error("Claude API error:", error);
+    throw error;
+  }
+}
 
 // ─── Stat Card ───
 function StatCard({ label, value, sub, accent }) {
@@ -169,27 +203,49 @@ function ScheduleRow({ item, accent }) {
   );
 }
 
-// ─── Content Generator ───
+// ─── Content Generator (REAL AI) ───
 function ContentGenerator({ client }) {
   const [selectedType, setSelectedType] = useState("Motivational Quote");
+  const [selectedPlatform, setSelectedPlatform] = useState(client.platforms[0] || "Instagram");
   const [generated, setGenerated] = useState([]);
   const [approved, setApproved] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [editingIdx, setEditingIdx] = useState(null);
+  const [editText, setEditText] = useState("");
 
-  const generate = () => {
-    const templates = CONTENT_TEMPLATES[selectedType] || [];
-    const available = templates.filter(t => !generated.includes(t));
-    if (available.length > 0) {
-      setGenerated(prev => [...prev, available[Math.floor(Math.random() * available.length)]]);
+  const generate = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const content = await generateWithClaude(client, selectedType, selectedPlatform);
+      setGenerated(prev => [{ text: content, type: selectedType, platform: selectedPlatform, timestamp: new Date().toLocaleTimeString() }, ...prev]);
+    } catch (err) {
+      setError(err.message);
     }
+    setLoading(false);
+  };
+
+  const startEdit = (idx, text) => {
+    setEditingIdx(idx);
+    setEditText(text);
+  };
+
+  const saveEdit = (idx) => {
+    setGenerated(prev => prev.map((item, i) => i === idx ? { ...item, text: editText } : item));
+    setEditingIdx(null);
+    setEditText("");
   };
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        {Object.keys(CONTENT_TEMPLATES).map(type => (
+      {/* Content Type Selection */}
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8, fontWeight: 700 }}>Content Type</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+        {CONTENT_TYPES.map(type => (
           <button
             key={type}
-            onClick={() => { setSelectedType(type); setGenerated([]); setApproved({}); }}
+            onClick={() => setSelectedType(type)}
             style={{
               padding: "6px 14px",
               borderRadius: 20,
@@ -206,58 +262,213 @@ function ContentGenerator({ client }) {
           </button>
         ))}
       </div>
+
+      {/* Platform Selection */}
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 8, fontWeight: 700 }}>Platform</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        {client.platforms.map(p => (
+          <button
+            key={p}
+            onClick={() => setSelectedPlatform(p)}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 10,
+              border: selectedPlatform === p ? `1px solid ${PLATFORM_COLORS[p]}` : "1px solid rgba(255,255,255,0.08)",
+              background: selectedPlatform === p ? `${PLATFORM_COLORS[p]}22` : "transparent",
+              color: selectedPlatform === p ? PLATFORM_COLORS[p] : "rgba(255,255,255,0.4)",
+              fontSize: 12,
+              cursor: "pointer",
+              fontFamily: "'DM Sans', sans-serif",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              transition: "all 0.2s"
+            }}
+          >
+            <span style={{ fontSize: 14 }}>{PLATFORM_ICONS[p]}</span> {p}
+          </button>
+        ))}
+      </div>
+
+      {/* Generate Button */}
       <button
         onClick={generate}
+        disabled={loading}
         style={{
-          padding: "10px 24px",
+          padding: "12px 28px",
           borderRadius: 8,
           border: "none",
-          background: client.accent,
-          color: client.color,
+          background: loading ? "rgba(255,255,255,0.1)" : client.accent,
+          color: loading ? "rgba(255,255,255,0.4)" : client.color,
           fontSize: 13,
           fontWeight: 700,
-          cursor: "pointer",
+          cursor: loading ? "not-allowed" : "pointer",
           fontFamily: "'DM Sans', sans-serif",
-          marginBottom: 16
+          marginBottom: 20,
+          display: "flex",
+          alignItems: "center",
+          gap: 8
         }}
       >
-        ⚡ Generate {selectedType}
+        {loading ? (
+          <>
+            <span style={{ display: "inline-block", animation: "spin 1s linear infinite", fontSize: 14 }}>⟳</span>
+            Agent is thinking...
+          </>
+        ) : (
+          <>⚡ Generate with AI</>
+        )}
       </button>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+      {/* API Status */}
+      {!CLAUDE_API_KEY && (
+        <div style={{
+          padding: 14, borderRadius: 10,
+          background: "rgba(239,68,68,0.08)",
+          border: "1px solid rgba(239,68,68,0.2)",
+          marginBottom: 16, fontSize: 12, color: "#ef4444",
+          fontFamily: "'DM Sans', sans-serif"
+        }}>
+          ⚠️ No API key detected. Add VITE_CLAUDE_API_KEY to your .env file and restart the dev server.
+        </div>
+      )}
+
+      {error && (
+        <div style={{
+          padding: 14, borderRadius: 10,
+          background: "rgba(239,68,68,0.08)",
+          border: "1px solid rgba(239,68,68,0.2)",
+          marginBottom: 16, fontSize: 12, color: "#ef4444",
+          fontFamily: "'DM Sans', sans-serif"
+        }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {/* Generated Content */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {generated.map((item, i) => (
           <div key={i} style={{
-            padding: 16,
-            borderRadius: 10,
+            padding: 20,
+            borderRadius: 12,
             background: approved[i] ? "rgba(74,222,128,0.05)" : "rgba(255,255,255,0.03)",
             border: approved[i] ? "1px solid rgba(74,222,128,0.2)" : "1px solid rgba(255,255,255,0.06)",
             fontFamily: "'DM Sans', sans-serif"
           }}>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", lineHeight: 1.6, marginBottom: 12 }}>{item}</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={() => setApproved(prev => ({ ...prev, [i]: true }))}
-                style={{
-                  padding: "5px 16px", borderRadius: 6, border: "none",
-                  background: approved[i] ? "#4ade80" : "rgba(74,222,128,0.15)",
-                  color: approved[i] ? "#000" : "#4ade80",
-                  fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
-                }}
-              >
-                {approved[i] ? "✓ Approved" : "Approve"}
-              </button>
-              <button
-                style={{
-                  padding: "5px 16px", borderRadius: 6,
-                  border: "1px solid rgba(255,255,255,0.1)", background: "transparent",
-                  color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
-                }}
-              >
-                Edit
-              </button>
+            {/* Meta info */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <div style={{
+                padding: "3px 10px", borderRadius: 12,
+                background: `${PLATFORM_COLORS[item.platform]}22`,
+                border: `1px solid ${PLATFORM_COLORS[item.platform]}33`,
+                fontSize: 10, color: PLATFORM_COLORS[item.platform], fontWeight: 600
+              }}>
+                {item.platform}
+              </div>
+              <div style={{
+                padding: "3px 10px", borderRadius: 12,
+                background: `${client.accent}15`,
+                border: `1px solid ${client.accent}25`,
+                fontSize: 10, color: client.accent, fontWeight: 600
+              }}>
+                {item.type}
+              </div>
+              <div style={{ marginLeft: "auto", fontSize: 10, color: "rgba(255,255,255,0.2)" }}>
+                {item.timestamp}
+              </div>
             </div>
+
+            {/* Content */}
+            {editingIdx === i ? (
+              <div>
+                <textarea
+                  value={editText}
+                  onChange={e => setEditText(e.target.value)}
+                  style={{
+                    width: "100%", minHeight: 120, padding: 14, borderRadius: 8,
+                    border: `1px solid ${client.accent}44`, background: "rgba(255,255,255,0.04)",
+                    color: "#fff", fontSize: 13, fontFamily: "'DM Sans', sans-serif",
+                    lineHeight: 1.7, resize: "vertical", outline: "none", boxSizing: "border-box"
+                  }}
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button onClick={() => saveEdit(i)} style={{
+                    padding: "6px 16px", borderRadius: 6, border: "none",
+                    background: client.accent, color: client.color,
+                    fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
+                  }}>Save</button>
+                  <button onClick={() => setEditingIdx(null)} style={{
+                    padding: "6px 16px", borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.1)", background: "transparent",
+                    color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
+                  }}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{
+                fontSize: 14, color: "rgba(255,255,255,0.85)", lineHeight: 1.7, marginBottom: 14,
+                whiteSpace: "pre-wrap"
+              }}>
+                {item.text}
+              </div>
+            )}
+
+            {/* Actions */}
+            {editingIdx !== i && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setApproved(prev => ({ ...prev, [i]: !prev[i] }))}
+                  style={{
+                    padding: "6px 18px", borderRadius: 6, border: "none",
+                    background: approved[i] ? "#4ade80" : "rgba(74,222,128,0.15)",
+                    color: approved[i] ? "#000" : "#4ade80",
+                    fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
+                  }}
+                >
+                  {approved[i] ? "✓ Approved" : "Approve"}
+                </button>
+                <button
+                  onClick={() => startEdit(i, item.text)}
+                  style={{
+                    padding: "6px 18px", borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.1)", background: "transparent",
+                    color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(item.text); }}
+                  style={{
+                    padding: "6px 18px", borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.1)", background: "transparent",
+                    color: "rgba(255,255,255,0.4)", fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
+                  }}
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => setGenerated(prev => prev.filter((_, idx) => idx !== i))}
+                  style={{
+                    padding: "6px 18px", borderRadius: 6,
+                    border: "1px solid rgba(239,68,68,0.2)", background: "transparent",
+                    color: "rgba(239,68,68,0.5)", fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans', sans-serif"
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 }
@@ -301,6 +512,7 @@ function AddClientModal({ onClose, onAdd }) {
       contentMix: form.contentMix.filter(x => x.trim()),
       guardrails: form.guardrails.filter(x => x.trim()),
       generatedContent: [],
+      schedule: [],
       analytics: { followers: 0, growth: "0%", engagement: "0%", topPlatform: "-", topContent: "-", weeklyPosts: 0, reach: "0" }
     });
   };
@@ -514,7 +726,7 @@ export default function AgencyDashboard() {
           <div style={{ fontSize: 11, color: "rgba(255,255,255,0.2)" }}>
             {time.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
           </div>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.12)", marginTop: 2 }}>Level 1 — No APIs Connected</div>
+          <div style={{ fontSize: 11, color: "#4ade80", marginTop: 2 }}>● AI Connected</div>
         </div>
       </div>
 
@@ -603,6 +815,7 @@ export default function AgencyDashboard() {
                   {client.schedule.slice(0, 5).map((item, i) => (
                     <ScheduleRow key={i} item={item} accent={client.accent} />
                   ))}
+                  {client.schedule.length === 0 && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.2)" }}>No posts scheduled yet</div>}
                 </div>
                 <div style={{ flex: 1, minWidth: 280 }}>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 14, fontWeight: 700 }}>Brand Voice</div>
@@ -639,7 +852,7 @@ export default function AgencyDashboard() {
 
           {activeTab === "content" && (
             <div>
-              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16, fontWeight: 700 }}>Content Generator — {client.name}</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 16, fontWeight: 700 }}>AI Content Generator — {client.name}</div>
               <ContentGenerator client={client} />
             </div>
           )}
@@ -706,7 +919,7 @@ OBJECTIVE: Build trust, drive engagement, funnel traffic. Every post should rein
                 fontSize: 12,
                 color: "rgba(255,255,255,0.45)"
               }}>
-                ℹ️ This is the Level 1 system prompt. When APIs are connected (Level 2), this prompt will be sent to the agent before every content generation and scheduling task.
+                ℹ️ This system prompt is sent to Claude before every content generation. Edit the client profile to change it.
               </div>
             </div>
           )}
